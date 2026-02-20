@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("KjellnersPersistentMaps")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7ad19aafa0eb9770999a250c4d971072d5521517")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+70f34f17dc2435271d44422d58cec77d11504937")]
 [assembly: System.Reflection.AssemblyProductAttribute("KjellnersPersistentMaps")]
 [assembly: System.Reflection.AssemblyTitleAttribute("KjellnersPersistentMaps")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

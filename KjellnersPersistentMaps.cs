@@ -155,6 +155,20 @@ namespace KjellnersPersistentMaps
         }
     }
 
+    // Block area revealed when rebuilding fog
+    [HarmonyPatch(typeof(FogGrid), "NotifyAreaRevealed")]
+    public static class Patch_DisableAreaRevealLettersDuringLoad
+    {
+        public static bool Prefix()
+        {
+            if (PersistentMapSerializer.IsRestoring)
+                return false; // Skip sending letters
+
+            return true;
+        }
+    }
+
+
 
     // Persistent Map Serializer
     public static class PersistentMapSerializer
@@ -207,6 +221,12 @@ namespace KjellnersPersistentMaps
                     );
                 }
 
+                // Fog
+                data.fogData = MapSerializeUtility.SerializeByte(
+                    map,
+                    c => map.fogGrid.IsFogged(c) ? (byte)1 : (byte)0
+                );
+
                 // Items
                 // We filter what we save to aviod crossref issues
                 data.items = new List<PersistentItemData>();
@@ -225,6 +245,32 @@ namespace KjellnersPersistentMaps
                         hitPoints = t.HitPoints
                     });
                 }
+
+                // Plants
+                data.plants = new List<PersistentPlantData>();
+
+                foreach (Thing t in map.listerThings.AllThings)
+                {
+                    if (t.def.category != ThingCategory.Plant)
+                        continue;
+
+                    Plant plant = t as Plant;
+                    if (plant == null)
+                        continue;
+
+                    // Optional: skip plants that shouldn't persist
+                    if (plant.Destroyed || plant.Position.IsValid == false)
+                        continue;
+
+                    data.plants.Add(new PersistentPlantData
+                    {
+                        defName = plant.def.defName,
+                        position = plant.Position,
+                        growth = plant.Growth,
+                        hitPoints = plant.HitPoints
+                    });
+                }
+
 
                 // Buildings
                 data.buildings = new List<PersistentBuildingData>();
@@ -301,7 +347,7 @@ namespace KjellnersPersistentMaps
                     return;
                 }
                 
-                // Roofs stuff
+                // Roofs & fog stuff
                 IsRestoring = true;
 
                 // -----------------------------
@@ -444,7 +490,6 @@ namespace KjellnersPersistentMaps
                     ApplyRoofs(map, data);
                 });
 
-
                 // -----------------------------
                 // Apply Snow
                 // -----------------------------
@@ -489,6 +534,25 @@ namespace KjellnersPersistentMaps
 
                 // Restore any saved pawns
                 // TODO: Implement
+                
+                // Fog
+                if (data.fogData != null)
+                {
+                    // First fog everything using Refog
+                    map.fogGrid.Refog(new CellRect(0, 0, map.Size.x, map.Size.z));
+
+                    MapSerializeUtility.LoadByte(
+                        data.fogData,
+                        map,
+                        (c, val) =>
+                        {
+                            if (val == 0)
+                            {
+                                // 0 = was unfogged
+                                map.fogGrid.Unfog(c);
+                            }
+                        });
+                }
 
 
                 Log.Message($"[PersistentMaps] Applied saved data for tile {tile}");

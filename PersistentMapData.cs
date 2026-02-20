@@ -16,6 +16,7 @@ namespace KjellnersPersistentMaps
         public byte[] roofData;
         public byte[] snowData;
         public byte[] pollutionData;
+        public byte[] fogData;
 
         public List<PersistentBuildingData> buildings;
         public List<PersistentItemData> items;
@@ -29,6 +30,7 @@ namespace KjellnersPersistentMaps
             DataExposeUtility.LookByteArray(ref roofData, "roofData");
             DataExposeUtility.LookByteArray(ref snowData, "snowData");
             DataExposeUtility.LookByteArray(ref pollutionData, "pollutionData");
+            DataExposeUtility.LookByteArray(ref fogData, "fogData");
 
             Scribe_Collections.Look(ref buildings, "buildings", LookMode.Deep);
             Scribe_Collections.Look(ref items, "items", LookMode.Deep);
