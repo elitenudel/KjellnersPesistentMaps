@@ -226,7 +226,7 @@ namespace KjellnersPersistentMaps
                 );
 
                 // Items
-                // We filter what we save to aviod crossref issues
+                // We filter what we save to avoid crossref issues
                 data.items = new List<PersistentItemData>();
 
                 foreach (Thing t in map.listerThings.AllThings)
@@ -234,13 +234,23 @@ namespace KjellnersPersistentMaps
                     if (!PersistentItemData.IsSafePersistentItem(t))
                         continue;
 
+                    // Deal with food rot
+                    float rot = 0f;
+
+                    var rotComp = t.TryGetComp<CompRottable>();
+                    if (rotComp != null)
+                    {
+                        rot = rotComp.RotProgress;
+                    }
+
                     data.items.Add(new PersistentItemData
                     {
                         defName = t.def.defName,
                         stuffDefName = t.Stuff?.defName,
                         position = t.Position,
                         stackCount = t.stackCount,
-                        hitPoints = t.HitPoints
+                        hitPoints = t.HitPoints,
+                        rotProgress = rot
                     });
                 }
 
@@ -316,6 +326,7 @@ namespace KjellnersPersistentMaps
     
         public static void LoadSavedMap(Map map, PlanetTile tile)
         {
+            // Mod stores data outside the regular save files
             string folder = GetPersistentFolder();
             if (string.IsNullOrEmpty(folder))
                 return;
@@ -344,6 +355,26 @@ namespace KjellnersPersistentMaps
                     KLog.Error("[PersistentMaps] Loaded data is null.");
                     return;
                 }
+
+                // Calculate time passed for decay
+                int ticksPassed = Find.TickManager.TicksGame - data.abandonedAtTick;
+                if (ticksPassed < 0)
+                    ticksPassed = 0;
+
+                int currentTick = Find.TickManager.TicksGame;
+                int abandonedTick = data.abandonedAtTick;
+                
+                // Configure decay context for this map
+                float rainfall = Find.WorldGrid[tile.tileId].rainfall;
+
+                // BUILD DECAY CONTEXT
+                var context = new OfflineDecayContext
+                {
+                    map = map,
+                    ticksPassed = ticksPassed,
+                    rainfall = rainfall,
+                    tileId = tile.tileId
+                };
                 
                 // Roofs & fog stuff
                 IsRestoring = true;
@@ -417,13 +448,20 @@ namespace KjellnersPersistentMaps
 
                     }
                 }
+                // -------------------------------------------------
+                // APPLY ROOFS EARLY (before items & decay)
+                // -------------------------------------------------
+                if (data.roofData != null)
+                {
+                    ApplyRoofs(map, data);
+                }
 
                 // Items
                 // Wipe mapgen
                 foreach (Thing t in map.listerThings.AllThings.ToList())
                 {
                     if (!PersistentItemData.IsSafePersistentItem(t))
-                            continue;
+                        continue;
 
                     t.Destroy(DestroyMode.Vanish);
                 }
@@ -437,6 +475,11 @@ namespace KjellnersPersistentMaps
                         if (def == null)
                             continue;
 
+                        var decay = DecayUtility.ApplyOfflineDecay(context, i);
+
+                        if (!decay.shouldSpawn)
+                            continue;
+
                         ThingDef stuff = null;
                         if (!string.IsNullOrEmpty(i.stuffDefName))
                             stuff = DefDatabase<ThingDef>.GetNamedSilentFail(i.stuffDefName);
@@ -444,9 +487,27 @@ namespace KjellnersPersistentMaps
                         Thing thing = ThingMaker.MakeThing(def, stuff);
 
                         thing.stackCount = i.stackCount;
-                        thing.HitPoints = Math.Max(1, Math.Min(i.hitPoints, thing.MaxHitPoints));
+                        thing.HitPoints = Math.Max(1, Math.Min(thing.MaxHitPoints, decay.resultingHp));
 
-                        GenSpawn.Spawn(thing, i.position, map, Rot4.North, WipeMode.Vanish, respawningAfterLoad: true);
+                        GenSpawn.Spawn(
+                            thing,
+                            i.position,
+                            map,
+                            Rot4.North,
+                            WipeMode.Vanish,
+                            respawningAfterLoad: true);
+
+                        // -------------------------------------------------
+                        // Apply rot progress AFTER spawn
+                        // -------------------------------------------------
+                        var rotComp = thing.TryGetComp<CompRottable>();
+                        if (rotComp != null)
+                        {
+                            // IMPORTANT:
+                            // resultingRotProgress already includes:
+                            // saved rot + offline seasonal rot
+                            rotComp.RotProgress = decay.resultingRotProgress;
+                        }
                     }
                 }
 
@@ -479,14 +540,6 @@ namespace KjellnersPersistentMaps
                         GenSpawn.Spawn(plant, p.position, map, Rot4.North, WipeMode.Vanish, respawningAfterLoad: true);
                     }
                 }
-
-                // -----------------------------
-                // Apply Roof
-                // -----------------------------
-                LongEventHandler.ExecuteWhenFinished(() =>
-                {
-                    ApplyRoofs(map, data);
-                });
 
                 // -----------------------------
                 // Apply Snow
@@ -552,7 +605,7 @@ namespace KjellnersPersistentMaps
                         });
                 }
 
-
+                IsRestoring = false;
                 KLog.Message($"[PersistentMaps] Applied saved data for tile {tile}");
             }
             catch (Exception e)
@@ -599,9 +652,7 @@ namespace KjellnersPersistentMaps
             }
 
             map.roofCollapseBuffer.Clear();
-            IsRestoring = false;
         }
-
 
         
         public static bool PersistentFileExists(PlanetTile tile)

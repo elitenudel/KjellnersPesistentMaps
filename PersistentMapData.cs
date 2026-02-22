@@ -89,6 +89,8 @@ namespace KjellnersPersistentMaps
         public int stackCount;
         public int hitPoints;
 
+        public float rotProgress;
+
         public void ExposeData()
         {
             Scribe_Values.Look(ref defName, "defName");
@@ -96,6 +98,8 @@ namespace KjellnersPersistentMaps
             Scribe_Values.Look(ref position, "position");
             Scribe_Values.Look(ref stackCount, "stackCount");
             Scribe_Values.Look(ref hitPoints, "hitPoints");
+
+            Scribe_Values.Look(ref rotProgress, "rotProgress", 0f);
         }
         
         public static bool IsSafePersistentItem(Thing t)
