@@ -20,17 +20,17 @@
 
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
-      <HintPath>/tank/home/kjellner/.steam/steam/steamapps/common/RimWorld/RimWorldLinux_Data/Managed/Assembly-CSharp.dll</HintPath>
+      <HintPath>$(HOME)/.steam/steam/steamapps/common/RimWorld/RimWorldLinux_Data/Managed/Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
 
     <Reference Include="UnityEngine">
-      <HintPath>/tank/home/kjellner/.steam/steam/steamapps/common/RimWorld/RimWorldLinux_Data/Managed/UnityEngine.dll</HintPath>
+      <HintPath>$(HOME)/.steam/steam/steamapps/common/RimWorld/RimWorldLinux_Data/Managed/UnityEngine.dll</HintPath>
       <Private>false</Private>
     </Reference>
 
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>/tank/home/kjellner/.steam/steam/steamapps/common/RimWorld/RimWorldLinux_Data/Managed/UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(HOME)/.steam/steam/steamapps/common/RimWorld/RimWorldLinux_Data/Managed/UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
@@ -43,7 +43,7 @@
 
   <PropertyGroup>
     <ExportDir>$(MSBuildProjectDirectory)/export/KjellnersPersistentMaps/1.6/Assemblies</ExportDir>
-    <SteamModDir>/tank/home/kjellner/.local/share/Steam/steamapps/common/RimWorld/Mods/KjellnersPersistentMaps/1.6/Assemblies</SteamModDir>
+    <SteamModDir>$(HOME)/.local/share/Steam/steamapps/common/RimWorld/Mods/KjellnersPersistentMaps/1.6/Assemblies</SteamModDir>
   </PropertyGroup>
 
   <Target Name="DeployMod" AfterTargets="Build">

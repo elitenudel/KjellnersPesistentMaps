@@ -24,3 +24,4 @@
 /tank/home/kjellner/SourceRep/KjellnersPersistentMaps_ScribeUpdate/export/KjellnersPersistentMaps/1.6/Assemblies/KjellnersPersistentMaps.pdb
 /tank/home/kjellner/SourceRep/KjellnersPersistentMaps_ScribeUpdate/bin/Release/net472/KjellnersPersistentMaps.dll
 /tank/home/kjellner/SourceRep/KjellnersPersistentMaps_ScribeUpdate/bin/Release/net472/KjellnersPersistentMaps.pdb
+/tank/home/kjellner/SourceRep/KjellnersPersistentMaps_ScribeUpdate/obj/Release/net472/KjellnersPersistentMaps.sourcelink.json
