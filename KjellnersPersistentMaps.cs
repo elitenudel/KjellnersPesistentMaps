@@ -51,6 +51,7 @@ namespace KjellnersPersistentMaps
                 Scribe.saver.InitSaving(file, "PersistentMap");
                 Scribe.mode = LoadSaveMode.Saving;
                 Scribe_Deep.Look(ref data, "MapData");
+                SaveOptInComponents(map);
                 Scribe.saver.FinalizeSaving();
 
                 // DeSpawn wildlife and clear faction in one pass after saving.
@@ -162,6 +163,9 @@ namespace KjellnersPersistentMaps
                     KLog.Error("[PersistentMaps] Loaded data is null.");
                     return;
                 }
+
+                // Must be called before FinalizeScribeLoadState so curXmlParent is still valid.
+                LoadOptInComponents(map);
 
                 ApplyTerrainData(map, data);
 
@@ -437,6 +441,86 @@ namespace KjellnersPersistentMaps
 
             Directory.CreateDirectory(folder);
             return folder;
+        }
+
+        // -------------------------
+        // Opt-in MapComponent serialization
+        // -------------------------
+
+        // Saves each IPersistableMapComponent as a sibling node alongside <MapData> in our XML.
+        // Must be called after Scribe_Deep.Look(ref data, "MapData") and before FinalizeSaving.
+        private static void SaveOptInComponents(Map map)
+        {
+            var comps = map.components
+                .Where(c => c is IPersistableMapComponent)
+                .ToList();
+
+            foreach (MapComponent comp in comps)
+            {
+                string key = SanitizeTypeName(comp.GetType().FullName);
+                var wrapper = new ComponentWrapper(comp);
+                Scribe_Deep.Look(ref wrapper, key);
+            }
+
+            if (comps.Count > 0)
+                KLog.Message($"[PersistentMaps] Saved {comps.Count} opt-in MapComponent(s)");
+        }
+
+        // Loads each IPersistableMapComponent from a sibling node in our XML into the
+        // matching live instance on the fresh map.  Must be called after
+        // Scribe_Deep.Look(ref data, "MapData") and before FinalizeScribeLoadState so that
+        // curXmlParent still points at the <PersistentMap> root element.
+        //
+        // Wrappers are added to crossReferencingExposables and initer by Scribe_Deep, so
+        // cross-refs resolve and PostLoadInit fires automatically in the existing restore flow.
+        private static void LoadOptInComponents(Map map)
+        {
+            int count = 0;
+            foreach (MapComponent comp in map.components)
+            {
+                if (!(comp is IPersistableMapComponent)) continue;
+                string key = SanitizeTypeName(comp.GetType().FullName);
+
+                // Inject the live instance so ComponentWrapper's parameterless ctor picks it up.
+                ComponentWrapper.SetPending(comp);
+                ComponentWrapper wrapper = null;
+                Scribe_Deep.Look(ref wrapper, key);
+                // Clear any unconsumed pending: if the XML node was absent (mod added after this
+                // save was made), Scribe_Deep never called new ComponentWrapper(), leaving
+                // _pending set and potentially corrupting the next iteration.
+                ComponentWrapper.SetPending(null);
+
+                if (wrapper != null) count++;
+            }
+
+            if (count > 0)
+                KLog.Message($"[PersistentMaps] Loaded {count} opt-in MapComponent(s)");
+        }
+
+        // Converts a type's FullName to a valid XML element name.
+        // Replaces '+' (nested class separator) and '.' (namespace separator) with '_'.
+        private static string SanitizeTypeName(string fullName) =>
+            fullName.Replace('+', '_').Replace('.', '_');
+
+        // Thin IExposable wrapper that delegates to a live MapComponent.
+        // Scribe_Deep.Look creates instances via new T() during loading; the static _pending
+        // field is set immediately before the call so the ctor can capture the live component.
+        private class ComponentWrapper : IExposable
+        {
+            [ThreadStatic]
+            private static MapComponent _pending;
+
+            internal static void SetPending(MapComponent comp) => _pending = comp;
+
+            private readonly MapComponent _comp;
+
+            // Used by Scribe_Deep in loading mode (Activator.CreateInstance → parameterless ctor).
+            public ComponentWrapper() { _comp = _pending; _pending = null; }
+
+            // Used directly on the save side to avoid relying on the static.
+            public ComponentWrapper(MapComponent comp) { _comp = comp; }
+
+            public void ExposeData() => _comp?.ExposeData();
         }
     }
 }
