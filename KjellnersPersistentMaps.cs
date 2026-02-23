@@ -251,14 +251,17 @@ namespace KjellnersPersistentMaps
 
         private static OfflineDecayContext BuildDecayContext(PersistentMapData data, Map map, PlanetTile tile)
         {
-            return new OfflineDecayContext
+            var context = new OfflineDecayContext
             {
-                map = map,
-                startTick = data.abandonedAtTick,
+                map        = map,
+                startTick  = data.abandonedAtTick,
                 ticksPassed = Math.Max(0, Find.TickManager.TicksGame - data.abandonedAtTick),
-                rainfall = Find.WorldGrid[tile.tileId].rainfall,
-                tileId = tile.tileId
+                rainfall   = Find.WorldGrid[tile.tileId].rainfall,
+                tileId     = tile.tileId
             };
+            // Computed once here so both ApplyDecay and SimulateStructuralFailures share the result.
+            context.hasFreezeTawCycles = DecayUtility.ComputeFreezeTawCycles(context);
+            return context;
         }
 
         // Removes WorldPawns ghost copies of deep-saved wildlife.
@@ -364,6 +367,10 @@ namespace KjellnersPersistentMaps
                 if (!PersistentMapData.ShouldPersistThing(t)) continue;
                 DecayUtility.ApplyDecay(t, context);
             }
+
+            // Second pass: discrete structural failure events (localized collapse clusters).
+            // Runs after per-thing decay so buildings already have weathering damage applied.
+            DecayUtility.SimulateStructuralFailures(map, context);
 
             if (data.snowData != null)
                 MapSerializeUtility.LoadByte(data.snowData, map,
