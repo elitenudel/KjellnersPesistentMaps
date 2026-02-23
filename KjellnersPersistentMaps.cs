@@ -368,8 +368,14 @@ namespace KjellnersPersistentMaps
                 DecayUtility.ApplyDecay(t, context);
             }
 
+            // Floor passive decay — erodes constructed floors on unroofed cells over time.
+            // Runs after terrain is restored (terrainGrid already has floors) and before
+            // structural failures so collapse events can then strip whatever passive decay left.
+            DecayUtility.ApplyFloorDecay(map, context);
+
             // Second pass: discrete structural failure events (localized collapse clusters).
             // Runs after per-thing decay so buildings already have weathering damage applied.
+            // ApplyOneStructuralFailure also strips floors in each blast zone.
             DecayUtility.SimulateStructuralFailures(map, context);
 
             if (data.snowData != null)

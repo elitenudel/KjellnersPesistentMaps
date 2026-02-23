@@ -120,13 +120,49 @@ namespace KjellnersPersistentMaps
         }
 
         // -------------------------
+        // Floor decay
+        // -------------------------
+
+        // Iterates every map cell and probabilistically removes constructed floors that are
+        // outdoors and exposed to rain and frost. The chance per cell compounds over time so
+        // short absences leave most floors intact while decade-long absences erode them heavily.
+        // Called after ApplyTerrainData (so floors are already restored) and before structural
+        // failure events (so collapse can then strip whatever passive decay left behind).
+        public static void ApplyFloorDecay(Map map, OfflineDecayContext context)
+        {
+            float yearsPassed = context.ticksPassed / (60000f * 60f);
+            if (yearsPassed <= 0f) return;
+
+            float normalizedRain = Math.Max(0f, Math.Min(1f, context.rainfall / 4000f));
+            float rainMod   = 0.5f + 1.5f * normalizedRain;
+            float freezeMod = context.hasFreezeTawCycles ? 1.5f : 1.0f;
+
+            // Base chance per unroofed constructed-floor cell per year to revert to natural terrain.
+            // 6% × modifiers means high-rain freeze-thaw tiles lose ~20-25% of exposed floors/yr.
+            const float baseChancePerYear = 0.06f;
+            float chancePerYear = baseChancePerYear * rainMod * freezeMod;
+
+            // Cumulative probability: 1 - (1 - p)^years
+            float totalChance = 1f - (float)Math.Pow(1.0 - chancePerYear, yearsPassed);
+
+            foreach (IntVec3 cell in map.AllCells)
+            {
+                if (map.roofGrid.Roofed(cell)) continue;                    // roofed floors are protected
+                if (map.terrainGrid.UnderTerrainAt(cell) == null) continue; // no constructed floor here
+
+                if (Rand.Value < totalChance)
+                    map.terrainGrid.RemoveTopLayer(cell, doLeavings: false);
+            }
+        }
+
+        // -------------------------
         // Structural failure events
         // -------------------------
 
         // Second decay pass: rolls for discrete structural collapse events — a localized
         // cluster of buildings takes heavy damage, simulating roof cave-ins, foundation
-        // failures, or ice-heave collapses. Frequency and severity scale with time, rainfall,
-        // roofing coverage, and freeze-thaw cycles.
+        // failures, or ice-heave collapses. Floors within the blast zone are also stripped.
+        // Frequency and severity scale with time, rainfall, roofing coverage, and freeze-thaw.
         public static void SimulateStructuralFailures(Map map, OfflineDecayContext context)
         {
             var candidates = map.listerThings.AllThings
@@ -199,6 +235,7 @@ namespace KjellnersPersistentMaps
             // At epicenter: damage scales from 20% (fresh) to 75% (long-abandoned) of max HP
             float baseDamageAtCenter = 0.20f + (0.75f - 0.20f) * timeSeverityScale;
 
+            // --- Building damage ---
             foreach (Thing t in map.listerThings.AllThings.ToList())
             {
                 if (t.Destroyed || !(t is Building b)) continue;
@@ -208,8 +245,7 @@ namespace KjellnersPersistentMaps
                 if (dist > radius) continue;
 
                 // Power-curve falloff: damage concentrates strongly toward center
-                // dist=0 → falloff=1.0 | dist=radius → falloff=0
-                float tNorm = dist / radius;
+                float tNorm   = dist / radius;
                 float falloff = (float)Math.Pow(1.0 - tNorm, 1.8);
 
                 float damagePercent = baseDamageAtCenter * falloff * exposureScale;
@@ -221,6 +257,24 @@ namespace KjellnersPersistentMaps
                 int damage = (int)Math.Round(b.MaxHitPoints * damagePercent);
                 if (damage > 0)
                     b.TakeDamage(new DamageInfo(DamageDefOf.Deterioration, damage));
+            }
+
+            // --- Floor damage in the collapse zone ---
+            // Debris from the collapse tears up constructed floors. Chance scales with
+            // proximity to epicenter and how long the site has been abandoned.
+            foreach (IntVec3 cell in GenRadial.RadialCellsAround(center, (float)radius, useCenter: true))
+            {
+                if (!cell.InBounds(map)) continue;
+                if (map.terrainGrid.UnderTerrainAt(cell) == null) continue; // no constructed floor
+
+                float dist    = center.DistanceTo(cell);
+                float tNorm   = dist / radius;
+                float falloff = (float)Math.Pow(1.0 - tNorm, 1.8);
+
+                float destroyChance = falloff * timeSeverityScale * 0.85f * exposureScale;
+
+                if (Rand.Value < destroyChance)
+                    map.terrainGrid.RemoveTopLayer(cell, doLeavings: false);
             }
         }
 
