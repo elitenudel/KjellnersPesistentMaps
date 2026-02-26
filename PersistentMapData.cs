@@ -1,6 +1,7 @@
 using RimWorld;
 using RimWorld.Planet;
 using Verse;
+using Verse.AI.Group;
 using HarmonyLib;
 using System;
 using System.IO;
@@ -20,6 +21,10 @@ namespace KjellnersPersistentMaps
 
         public List<Thing> savedThings;
 
+        // Lords that owned non-player non-humanlike pawns (mech cluster lords, etc.).
+        // Saved in the same XML document as savedThings so ownedPawns cross-refs resolve.
+        public List<Lord> savedLords;
+
         public int abandonedAtTick;
 
         public void ExposeData()
@@ -31,11 +36,15 @@ namespace KjellnersPersistentMaps
             DataExposeUtility.LookByteArray(ref fogData, "fogData");
 
             Scribe_Collections.Look(ref savedThings, "savedThings", LookMode.Deep);
+            Scribe_Collections.Look(ref savedLords, "savedLords", LookMode.Deep);
 
             Scribe_Values.Look(ref abandonedAtTick, "abandonedAtTick", 0);
 
-            if (Scribe.mode == LoadSaveMode.PostLoadInit && savedThings == null)
-                savedThings = new List<Thing>();
+            if (Scribe.mode == LoadSaveMode.PostLoadInit)
+            {
+                savedThings ??= new List<Thing>();
+                savedLords  ??= new List<Lord>();
+            }
         }
 
         public static bool ShouldPersistThing(Thing t)

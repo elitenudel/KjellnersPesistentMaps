@@ -1,6 +1,7 @@
 using RimWorld;
 using RimWorld.Planet;
 using Verse;
+using Verse.AI.Group;
 using System;
 using System.IO;
 using System.Collections.Generic;
@@ -40,13 +41,7 @@ namespace KjellnersPersistentMaps
                 record.playerAnimalPawns.Clear();
                 record.worldCreaturePawns.Clear();
 
-                int cryoCount = ExtractCryoColonists(map, record);
-                if (cryoCount > 0)
-                    KLog.Message($"[PersistentMaps] Moved {cryoCount} cryo colonists to WorldPawns(KeepForever) for tile {tile.tileId}");
-
-                int casketCount = ExtractCasketNonPlayerPawns(map, record);
-                if (casketCount > 0)
-                    KLog.Message($"[PersistentMaps] Moved {casketCount} ancient casket occupants to WorldPawns(KeepForever) for tile {tile.tileId}");
+                ExtractAllCasketOccupants(map, record);
 
                 int animalCount = ExtractPlayerAnimals(map, record);
                 if (animalCount > 0)
@@ -56,9 +51,18 @@ namespace KjellnersPersistentMaps
                 if (creatureCount > 0)
                     KLog.Message($"[PersistentMaps] Deep-saved {creatureCount} WorldPawn creatures to WorldComponent for tile {tile.tileId}");
 
+                // Collect lords that own non-player non-humanlike pawns (mech cluster lords etc.).
+                // Saved in the same XML document as savedThings so ownedPawns cross-refs resolve.
+                data.savedLords = map.lordManager.lords
+                    .Where(l => l.ownedPawns.Any(p => p != null && p.Spawned && !p.RaceProps.Humanlike && p.Faction != Faction.OfPlayer))
+                    .ToList();
+                if (data.savedLords.Count > 0)
+                    KLog.Message($"[PersistentMaps] Saving {data.savedLords.Count} lord(s) with their pawns for tile {tile.tileId}");
+
                 // Build savedThings while everything is still spawned.
                 // Caskets are empty (all occupants extracted to WorldComponent above).
                 // Wild animals are included; player animals have been DeSpawned above.
+                // Faction mechs (owned by savedLords) are included here too.
                 data.savedThings = map.listerThings.AllThings
                     .Where(PersistentMapData.ShouldPersistThing)
                     .ToList();
@@ -82,6 +86,16 @@ namespace KjellnersPersistentMaps
                 // SetFaction(null) prevents RimWorld's faction cleanup from parking the
                 // DeSpawned animals in WorldPawns (which would also cause ID collisions).
                 DeSpawnAndClearWildlife(data.savedThings);
+
+                // DeSpawn lord-owned faction mechs after XML is written.
+                // Their data is already captured in the XML; DeSpawn removes them from
+                // mapPawns so DeinitAndRemoveMap won't Destroy them into pawnsDead.
+                // Unlike wildlife we do NOT clear faction — mechs keep theirs for proper
+                // behaviour on restore.
+                foreach (Lord lord in data.savedLords)
+                    foreach (Pawn p in lord.ownedPawns.ToList())
+                        if (p != null && p.Spawned)
+                            p.DeSpawn(DestroyMode.Vanish);
 
                 LogSaveStats(file, data, record);
                 KLog.Message($"[PersistentMaps] Saved persistent map to {file}");
@@ -224,37 +238,14 @@ namespace KjellnersPersistentMaps
                 map, c => map.fogGrid.IsFogged(c) ? (byte)1 : (byte)0);
         }
 
-        // Pulls player colonists out of cryptosleep caskets → WorldPawns(KeepForever)
-        // so they live in the main .rws save (faction, relations, ideo roles preserved).
-        // Their casket position is recorded for re-insertion on restore.
-        // Must run BEFORE building savedThings so caskets are empty in our XML.
-        private static int ExtractCryoColonists(Map map, TileRecord record)
+        // Extracts all pawn occupants from every cryptosleep casket in a single pass:
+        //   · Player-faction pawns → record.cryoPawns  (re-inserted into caskets on restore)
+        //   · All other pawns      → record.casketPawns (ancient soldiers, slaves, etc.)
+        // Both groups go to WorldPawns(KeepForever) so faction/relations survive in the main .rws.
+        // Must run BEFORE building savedThings so all caskets are empty in our XML.
+        private static void ExtractAllCasketOccupants(Map map, TileRecord record)
         {
-            int count = 0;
-            foreach (Thing t in map.listerThings.AllThings.ToList())
-            {
-                if (!(t is Building_Casket casket)) continue;
-                ThingOwner held = casket.GetDirectlyHeldThings();
-                for (int i = held.Count - 1; i >= 0; i--)
-                {
-                    if (!(held[i] is Pawn cp) || cp.Faction != Faction.OfPlayer) continue;
-                    held.Remove(cp);
-                    Find.WorldPawns.PassToWorld(cp, PawnDiscardDecideMode.KeepForever);
-                    record.cryoPawns.Add(new CryoPawnRecord { pawn = cp, position = casket.Position });
-                    count++;
-                }
-            }
-            return count;
-        }
-
-        // Pulls all remaining (non-player) pawns out of cryptosleep caskets →
-        // WorldPawns(KeepForever). Covers ancient soldiers, slaves, and any other
-        // non-player casket occupant. Records casket position so they can be
-        // re-inserted on restore. Must run AFTER ExtractCryoColonists (player pawns
-        // already gone) and BEFORE building savedThings (caskets must be empty in XML).
-        private static int ExtractCasketNonPlayerPawns(Map map, TileRecord record)
-        {
-            int count = 0;
+            int cryoCount = 0, casketCount = 0;
             foreach (Thing t in map.listerThings.AllThings.ToList())
             {
                 if (!(t is Building_Casket casket)) continue;
@@ -263,14 +254,15 @@ namespace KjellnersPersistentMaps
                 {
                     if (!(held[i] is Pawn cp)) continue;
                     held.Remove(cp);
-                    // Only call PassToWorld if the pawn isn't already a world pawn.
                     if (Find.WorldPawns.GetSituation(cp) == WorldPawnSituation.None)
                         Find.WorldPawns.PassToWorld(cp, PawnDiscardDecideMode.KeepForever);
-                    record.casketPawns.Add(new CryoPawnRecord { pawn = cp, position = casket.Position });
-                    count++;
+                    var rec = new CryoPawnRecord { pawn = cp, position = casket.Position };
+                    if (cp.Faction == Faction.OfPlayer) { record.cryoPawns.Add(rec);   cryoCount++; }
+                    else                                { record.casketPawns.Add(rec); casketCount++; }
                 }
             }
-            return count;
+            if (cryoCount   > 0) KLog.Message($"[PersistentMaps] Moved {cryoCount} cryo colonists to WorldPawns(KeepForever) for tile {record.tileId}");
+            if (casketCount > 0) KLog.Message($"[PersistentMaps] Moved {casketCount} ancient casket occupants to WorldPawns(KeepForever) for tile {record.tileId}");
         }
 
         // Extracts non-humanlike pawns from the map before savedThings is built:
@@ -282,7 +274,6 @@ namespace KjellnersPersistentMaps
         private static int ExtractPlayerAnimals(Map map, TileRecord record)
         {
             int playerCount = 0;
-            int factionCount = 0;
             foreach (Pawn p in map.mapPawns.AllPawnsSpawned.ToList())
             {
                 if (p.RaceProps.Humanlike) continue;
@@ -296,17 +287,10 @@ namespace KjellnersPersistentMaps
                     record.playerAnimalPawns.Add(new CryoPawnRecord { pawn = p, position = pos });
                     playerCount++;
                 }
-                else if (p.Faction != null && Find.WorldPawns.GetSituation(p) == WorldPawnSituation.None)
-                {
-                    // Friendly/enemy faction animals: return to WorldPawns, no position.
-                    p.DeSpawn(DestroyMode.Vanish);
-                    Find.WorldPawns.PassToWorld(p, PawnDiscardDecideMode.KeepForever);
-                    factionCount++;
-                }
                 // Wild animals (null faction, or already a WorldPawn) → deep-saved in XML.
+                // Faction mechs (non-null faction, GetSituation==None, not player) stay on the
+                // map too — their lord is collected separately and saved alongside savedThings.
             }
-            if (factionCount > 0)
-                KLog.Message($"[PersistentMaps] Returned {factionCount} friendly/enemy faction animals to WorldPawns");
             return playerCount;
         }
 
@@ -389,6 +373,49 @@ namespace KjellnersPersistentMaps
                 forced.Remove(p);
         }
 
+        // Returns the first Building_Casket at the given map position, or null.
+        private static Building_Casket CasketAtPosition(IntVec3 pos, Map map) =>
+            map.thingGrid.ThingsListAt(pos).OfType<Building_Casket>().FirstOrDefault();
+
+        // Removes all contents from a casket without triggering Destroy side-effects.
+        private static void DrainCasket(Building_Casket casket)
+        {
+            ThingOwner held = casket.GetDirectlyHeldThings();
+            while (held.Count > 0)
+                held.Remove(held[0]);
+        }
+
+        // Spawns a pawn at pos; falls back to a random animal cell if pos is out-of-bounds
+        // or not standable. Used for animal/creature restores that tracked a map position.
+        private static void SpawnAtSavedPosition(Pawn p, IntVec3 pos, Map map)
+        {
+            if (!pos.InBounds(map) || !pos.Standable(map))
+            {
+                IntVec3 original = pos;
+                // Try a nearby standable cell first; only fall back to a random map cell
+                // if nothing is found within range (e.g. the saved position is now walled in).
+                if (!pos.InBounds(map) || !CellFinder.TryFindRandomCellNear(pos, map, 8, c => c.Standable(map), out pos))
+                {
+                    pos = RCellFinder.RandomAnimalSpawnCell_MapGen(map);
+                    KLog.Message($"[PersistentMaps] SpawnAtSavedPosition: {p.LabelShort} saved={original} inBounds={original.InBounds(map)} standable={original.InBounds(map) && original.Standable(map)} → fallback random={pos}");
+                }
+                else
+                {
+                    KLog.Message($"[PersistentMaps] SpawnAtSavedPosition: {p.LabelShort} saved={original} not standable → nearby={pos}");
+                }
+            }
+            GenSpawn.Spawn(p, pos, map, p.Rotation, WipeMode.Vanish, respawningAfterLoad: true);
+            KLog.Message($"[PersistentMaps] SpawnAtSavedPosition: {p.LabelShort} intended={pos} actual={p.Position} spawned={p.Spawned}");
+        }
+
+        // Spawns a pawn at preferredPos if standable, otherwise at a random animal cell.
+        // Uses Rot4.North; intended for casket occupants that failed re-insertion.
+        private static void SpawnFreeFallback(Pawn p, IntVec3 preferredPos, Map map)
+        {
+            IntVec3 pos = preferredPos.Standable(map) ? preferredPos : RCellFinder.RandomAnimalSpawnCell_MapGen(map);
+            GenSpawn.Spawn(p, pos, map, Rot4.North);
+        }
+
         // -------------------------
         // Load
         // -------------------------
@@ -432,6 +459,13 @@ namespace KjellnersPersistentMaps
                 // Clearing the ghosts first lets RefInjector skip those IDs entirely.
                 RemoveWorldPawnGhosts(data.savedThings);
 
+                // Set lordManager on saved lords NOW — before DoAllPostLoadInits() runs.
+                // Lord.PostLoadInit() accesses lord.Map (= lordManager?.map) and will
+                // NullReference if lordManager is still null at that point.
+                if (data.savedLords != null)
+                    foreach (Lord lord in data.savedLords)
+                        if (lord != null) lord.lordManager = map.lordManager;
+
                 // Register live game objects as cross-ref targets so references in our
                 // fragment XML (faction, ideo, master, etc.) resolve into the live game.
                 RefInjector.PreRegisterActiveGame();
@@ -454,6 +488,23 @@ namespace KjellnersPersistentMaps
                 // protects their InnerPawns. Remove the ForcefullyKept entries we added
                 // in SaveMap so they don't accumulate across multiple abandon/settle cycles.
                 UnprotectCorpseInnerPawns(data.savedThings);
+
+                // Restore mech cluster lords (and similar). The lords were deep-saved in the
+                // same XML document as savedThings, so ownedPawns cross-refs already resolved.
+                // Setting lordManager and adding to lords lets the lord tick normally and gives
+                // the mechs valid job targets — preventing the (0,0,0) teleport on first tick.
+                if (data.savedLords != null && data.savedLords.Count > 0)
+                {
+                    foreach (Lord lord in data.savedLords)
+                    {
+                        if (lord == null) continue;
+                        // lordManager was already set before PostLoadInits; just add + register.
+                        map.lordManager.lords.Add(lord);
+                        Find.SignalManager.RegisterReceiver(lord);
+                    }
+                    KLog.Message($"[PersistentMaps] Restored {data.savedLords.Count} lord(s) for tile {tile.tileId}");
+                }
+
                 RestoreWorldComponentPawns(map, tile);
                 ApplyMapGridData(map, data, context);
 
@@ -487,11 +538,7 @@ namespace KjellnersPersistentMaps
                 }
 
                 if (t is Building_Casket casket)
-                {
-                    ThingOwner held = casket.GetDirectlyHeldThings();
-                    while (held.Count > 0)
-                        held.Remove(held[0]);
-                }
+                    DrainCasket(casket);
 
                 t.Destroy(DestroyMode.Vanish);
             }
@@ -569,14 +616,8 @@ namespace KjellnersPersistentMaps
                 if (t is Building_Casket)
                 {
                     foreach (Thing existing in map.thingGrid.ThingsListAt(t.Position).ToList())
-                    {
                         if (existing is Building_Casket existingCasket)
-                        {
-                            ThingOwner held = existingCasket.GetDirectlyHeldThings();
-                            while (held.Count > 0)
-                                held.Remove(held[0]);
-                        }
-                    }
+                            DrainCasket(existingCasket);
                 }
 
                 GenSpawn.Spawn(t, t.Position, map, t.Rotation, WipeMode.Vanish, respawningAfterLoad: true);
@@ -595,10 +636,7 @@ namespace KjellnersPersistentMaps
             {
                 if (p == null || p.Destroyed) continue;
                 Find.WorldPawns.RemovePawn(p);
-                IntVec3 pos = p.Position;
-                if (!pos.InBounds(map) || !pos.Standable(map))
-                    pos = RCellFinder.RandomAnimalSpawnCell_MapGen(map);
-                GenSpawn.Spawn(p, pos, map, p.Rotation, WipeMode.Vanish, respawningAfterLoad: true);
+                SpawnAtSavedPosition(p, p.Position, map);
                 legacyRestored++;
             }
             if (legacyRestored > 0)
@@ -611,9 +649,7 @@ namespace KjellnersPersistentMaps
                 if (cryo?.pawn == null || cryo.pawn.Destroyed) continue;
                 Find.WorldPawns.RemovePawn(cryo.pawn);
 
-                Building_Casket target = map.thingGrid.ThingsListAt(cryo.position)
-                    .OfType<Building_Casket>().FirstOrDefault();
-
+                Building_Casket target = CasketAtPosition(cryo.position, map);
                 if (target != null && target.TryAcceptThing(cryo.pawn, allowSpecialEffects: false))
                 {
                     // WorldPawns/abandon cycle may have stripped player faction.
@@ -624,8 +660,7 @@ namespace KjellnersPersistentMaps
                 else
                 {
                     KLog.Warning($"[PersistentMaps] No casket at {cryo.position} for {cryo.pawn.Name?.ToStringFull}; spawning free");
-                    IntVec3 fallback = cryo.position.Standable(map) ? cryo.position : RCellFinder.RandomAnimalSpawnCell_MapGen(map);
-                    GenSpawn.Spawn(cryo.pawn, fallback, map, Rot4.North);
+                    SpawnFreeFallback(cryo.pawn, cryo.position, map);
                 }
             }
             if (cryoRestored > 0)
@@ -639,9 +674,7 @@ namespace KjellnersPersistentMaps
                 if (Find.WorldPawns.GetSituation(cr.pawn) != WorldPawnSituation.None)
                     Find.WorldPawns.RemovePawn(cr.pawn);
 
-                Building_Casket target = map.thingGrid.ThingsListAt(cr.position)
-                    .OfType<Building_Casket>().FirstOrDefault();
-
+                Building_Casket target = CasketAtPosition(cr.position, map);
                 if (target != null && target.TryAcceptThing(cr.pawn, allowSpecialEffects: false))
                 {
                     casketRestored++;
@@ -649,8 +682,7 @@ namespace KjellnersPersistentMaps
                 else
                 {
                     KLog.Warning($"[PersistentMaps] No casket at {cr.position} for ancient pawn {cr.pawn.Name?.ToStringFull}; spawning free");
-                    IntVec3 fallback = cr.position.Standable(map) ? cr.position : RCellFinder.RandomAnimalSpawnCell_MapGen(map);
-                    GenSpawn.Spawn(cr.pawn, fallback, map, Rot4.North);
+                    SpawnFreeFallback(cr.pawn, cr.position, map);
                 }
             }
             if (casketRestored > 0)
@@ -668,10 +700,7 @@ namespace KjellnersPersistentMaps
                 if (ar.pawn.Faction != Faction.OfPlayer)
                     ar.pawn.SetFaction(Faction.OfPlayer);
 
-                IntVec3 pos = ar.position;
-                if (!pos.InBounds(map) || !pos.Standable(map))
-                    pos = RCellFinder.RandomAnimalSpawnCell_MapGen(map);
-                GenSpawn.Spawn(ar.pawn, pos, map, ar.pawn.Rotation, WipeMode.Vanish, respawningAfterLoad: true);
+                SpawnAtSavedPosition(ar.pawn, ar.position, map);
                 animalRestored++;
             }
             if (animalRestored > 0)
@@ -679,14 +708,18 @@ namespace KjellnersPersistentMaps
 
             // Re-spawn WorldPawn creatures (ancient danger mechs/insects, mech cluster pawns)
             // at their saved positions. These were deep-saved in WorldComponent (not WorldPawns).
+            // Stop all jobs after spawning: their saved jobs reference a lord/targets that no
+            // longer exist, which would cause them to teleport to (0,0,0) on the first AI tick.
             int creatureRestored = 0;
             foreach (DeepPawnRecord cr in record.worldCreaturePawns.ToList())
             {
                 if (cr?.pawn == null || cr.pawn.Destroyed) continue;
-                IntVec3 pos = cr.position;
-                if (!pos.InBounds(map) || !pos.Standable(map))
-                    pos = RCellFinder.RandomAnimalSpawnCell_MapGen(map);
-                GenSpawn.Spawn(cr.pawn, pos, map, cr.pawn.Rotation, WipeMode.Vanish, respawningAfterLoad: true);
+                SpawnAtSavedPosition(cr.pawn, cr.position, map);
+                if (cr.pawn.Spawned)
+                {
+                    cr.pawn.jobs?.StopAll();
+                    cr.pawn.mindState.duty = null;
+                }
                 creatureRestored++;
             }
             if (creatureRestored > 0)

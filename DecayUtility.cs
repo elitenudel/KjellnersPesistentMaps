@@ -14,6 +14,9 @@ namespace KjellnersPersistentMaps
         public int tileId;
         public float rainfall;
         public bool hasFreezeThawCycles; // computed once by BuildDecayContext, shared by all decay passes
+
+        public float YearsPassed        => ticksPassed / (60000f * 60f);
+        public float NormalizedRainfall => Math.Max(0f, Math.Min(1f, rainfall / 4000f));
     }
 
     public static class DecayUtility
@@ -60,8 +63,7 @@ namespace KjellnersPersistentMaps
             if (!thing.Destroyed && !(thing is Building) && !context.map.roofGrid.Roofed(thing.Position))
             {
                 float intervals = context.ticksPassed / 250f;
-                float normalizedRain = Math.Max(0f, Math.Min(1f, context.rainfall / 4000f));
-                float rainFactor = 0.5f + 1.5f * normalizedRain;
+                float rainFactor = 0.5f + 1.5f * context.NormalizedRainfall;
                 int damage = (int)Math.Round(intervals * 0.015f * rainFactor);
 
                 if (damage > 0)
@@ -78,7 +80,7 @@ namespace KjellnersPersistentMaps
             if (building.def.IsFrame || building.def.IsBlueprint) return;
             if (building.def.building?.isNaturalRock == true) return;
 
-            float yearsPassed = context.ticksPassed / (60000f * 60f);
+            float yearsPassed = context.YearsPassed;
             if (yearsPassed <= 0f) return;
 
             bool roofed = context.map.roofGrid.Roofed(building.Position);
@@ -90,8 +92,7 @@ namespace KjellnersPersistentMaps
             float exposureFactor = roofed ? 0.08f : 1.0f;
 
             // Rain accelerates decay of exposed structures; irrelevant for roofed
-            float normalizedRain = Math.Max(0f, Math.Min(1f, context.rainfall / 4000f));
-            float rainFactor = roofed ? 1.0f : 0.5f + 1.5f * normalizedRain;
+            float rainFactor = roofed ? 1.0f : 0.5f + 1.5f * context.NormalizedRainfall;
 
             // Freeze-thaw cycles crack masonry and loosen foundations
             float freezeFactor = context.hasFreezeThawCycles ? 1.4f : 1.0f;
@@ -130,11 +131,10 @@ namespace KjellnersPersistentMaps
         // failure events (so collapse can then strip whatever passive decay left behind).
         public static void ApplyFloorDecay(Map map, OfflineDecayContext context)
         {
-            float yearsPassed = context.ticksPassed / (60000f * 60f);
+            float yearsPassed = context.YearsPassed;
             if (yearsPassed <= 0f) return;
 
-            float normalizedRain = Math.Max(0f, Math.Min(1f, context.rainfall / 4000f));
-            float rainMod   = 0.5f + 1.5f * normalizedRain;
+            float rainMod   = 0.5f + 1.5f * context.NormalizedRainfall;
             float freezeMod = context.hasFreezeThawCycles ? 1.5f : 1.0f;
 
             // Base chance per unroofed constructed-floor cell per year to revert to natural terrain.
@@ -186,12 +186,11 @@ namespace KjellnersPersistentMaps
             const float minimumYears = 0.25f; // no events before ~15 in-game days
             const float baseMtbDays  = 300f;  // ~one event per 10 months at baseline
 
-            float yearsPassed = context.ticksPassed / (60000f * 60f);
+            float yearsPassed = context.YearsPassed;
             if (yearsPassed < minimumYears) return 0;
 
             // High rain → lower MTB → more frequent events
-            float normalizedRain = Math.Max(0f, Math.Min(1f, context.rainfall / 4000f));
-            float rainMod = 0.4f + 0.6f * (1f - normalizedRain); // 1.0 dry → 0.4 very wet
+            float rainMod = 0.4f + 0.6f * (1f - context.NormalizedRainfall); // 1.0 dry → 0.4 very wet
 
             // Freeze-thaw shortens time between failures
             float freezeMod = context.hasFreezeThawCycles ? 0.65f : 1.0f;
@@ -210,9 +209,14 @@ namespace KjellnersPersistentMaps
             return Math.Min(count, 8); // cap so extreme absences don't obliterate a map
         }
 
+        // Power-curve falloff: 1.0 at the centre, 0.0 at the radius edge.
+        // Exponent 1.8 concentrates damage strongly toward the epicenter.
+        private static float PowerFalloff(float dist, float radius) =>
+            (float)Math.Pow(1.0 - dist / radius, 1.8);
+
         private static void ApplyOneStructuralFailure(Map map, OfflineDecayContext context, List<Building> candidates)
         {
-            float yearsPassed = context.ticksPassed / (60000f * 60f);
+            float yearsPassed = context.YearsPassed;
 
             // Exponential ramp: at 1yr≈0.18, 3yr≈0.45, 5yr≈0.63, 10yr≈0.86
             float timeSeverityScale = 1f - (float)Math.Exp(-yearsPassed / 5.0);
@@ -244,9 +248,7 @@ namespace KjellnersPersistentMaps
                 float dist = center.DistanceTo(b.Position);
                 if (dist > radius) continue;
 
-                // Power-curve falloff: damage concentrates strongly toward center
-                float tNorm   = dist / radius;
-                float falloff = (float)Math.Pow(1.0 - tNorm, 1.8);
+                float falloff = PowerFalloff(dist, radius);
 
                 float damagePercent = baseDamageAtCenter * falloff * exposureScale;
 
@@ -268,8 +270,7 @@ namespace KjellnersPersistentMaps
                 if (map.terrainGrid.UnderTerrainAt(cell) == null) continue; // no constructed floor
 
                 float dist    = center.DistanceTo(cell);
-                float tNorm   = dist / radius;
-                float falloff = (float)Math.Pow(1.0 - tNorm, 1.8);
+                float falloff = PowerFalloff(dist, radius);
 
                 float destroyChance = falloff * timeSeverityScale * 0.85f * exposureScale;
 
